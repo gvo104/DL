@@ -1,4 +1,4 @@
-ПРИМЕР 1:
+ПРИМЕР 1 (ПОЛНЫЙ КОНТЕКСТ):
 
 Тема: Retrieval-Augmented Generation
 
@@ -6,42 +6,69 @@
 Retrieval-Augmented Generation (RAG) — это подход, при котором языковая модель использует внешние источники знаний для генерации ответов.
 
 2. Основные подходы:
-Основные подходы включают dense retrieval и sparse retrieval...
+Основные подходы включают dense retrieval и sparse retrieval, а также гибридные методы, комбинирующие поиск по ключевым словам и семантический поиск.
 
 3. Ключевые работы:
+- Lewis et al., 2020 — Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks
+- Borgeaud et al., 2022 — Improving language models by retrieving from trillions of tokens
+- Izacard et al., 2022 — Atlas: Few-shot Learning with Retrieval Augmented Language Models
+
+4. Применения:
+Используется в вопросно-ответных системах, чат-ботах, summarization и fact-checking.
+
+5. Ограничения:
+Зависимость от качества retrieval системы, возможные проблемы с латентностью при большом объёме документов.
+
+6. Источники:
 - Lewis et al., 2020
 - Borgeaud et al., 2022
-
-4. Применения:
-Используется в вопросно-ответных системах...
-
-5. Ограничения:
-Зависимость от качества retrieval системы...
-
-6. Источники:
-- Lewis et al., 2020
 - Wikipedia
 
-ПРИМЕР 2:
+ПРИМЕР 2 (ОГРАНИЧЕННЫЙ КОНТЕКСТ):
 
-Тема: Graph Neural Networks
+Тема: Particle swarm optimization for neural architecture search
 
 1. Определение:
-Graph Neural Networks — это класс моделей для обработки графовых структур...
+Недостаточно данных в предоставленных источниках
 
 2. Основные подходы:
-Message passing, Graph Attention Networks...
+В найденных публикациях упоминается использование particle swarm optimization (PSO) для автоматизированного поиска архитектур нейронных сетей.
 
 3. Ключевые работы:
-- Kipf & Welling, 2017
-- Veličković et al., 2018
+- Particle Swarm Optimization for Neural Architecture Search (2023)
+- Swarm Intelligence in Deep Learning: A Survey (2022)
 
 4. Применения:
-Социальные сети, химия, рекомендации...
+В публикациях указано применение PSO для задач автоматизированного проектирования нейронных сетей и оптимизации гиперпараметров.
 
 5. Ограничения:
-Проблемы масштабирования...
+Недостаточно данных в предоставленных источниках
 
 6. Источники:
-- arXiv papers
+- Particle Swarm Optimization for Neural Architecture Search (2023)
+- Swarm Intelligence in Deep Learning: A Survey (2022)
 - Wikipedia
+
+ПРИМЕР 3 (МИНИМАЛЬНЫЙ КОНТЕКСТ):
+
+Тема: Blockchain-based federated learning for healthcare
+
+1. Определение:
+Недостаточно данных в предоставленных источниках
+
+2. Основные подходы:
+Недостаточно данных в предоставленных источниках
+
+3. Ключевые работы:
+- Federated Learning Meets Blockchain in Healthcare: A Systematic Review (2024)
+- Privacy-Preserving Federated Learning for Healthcare Data (2023)
+
+4. Применения:
+Недостаточно данных в предоставленных источниках
+
+5. Ограничения:
+Недостаточно данных в предоставленных источниках
+
+6. Источники:
+- Federated Learning Meets Blockchain in Healthcare: A Systematic Review (2024)
+- Privacy-Preserving Federated Learning for Healthcare Data (2023)
