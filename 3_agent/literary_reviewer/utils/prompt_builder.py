@@ -28,3 +28,28 @@ def build_prompt(topic: str, wiki: str, papers_text: str, n_sentences: int) -> s
     "Примеры не для копирования:",
     few_shots,
     ])
+    
+def build_prompt_agent(topic: str, wiki: str, abstracts_text: str, n_sentences: int = 10) -> str:
+    """
+    Собирает промпт для агента: Wikipedia + аннотации OpenAlex.
+    """
+    system_prompt = load_txt("prompts/system_prompt.txt")
+    task_prompt = load_txt("prompts/task_prompt_agent.txt")  # отдельный файл для агента
+    few_shots = load_txt("prompts/few_shots.txt")
+
+    task_prompt = task_prompt.format(
+        topic=topic,
+        wiki=wiki,
+        abstracts_text=abstracts_text,
+        n_sentences=n_sentences
+    )
+
+    return "\n\n".join([
+        "### SYSTEM",
+        system_prompt,
+        "### TASK",
+        task_prompt,
+        "### FEW-SHOTS",
+        "Примеры не для копирования:",
+        few_shots,
+    ])

@@ -166,6 +166,27 @@ def search_crossref(query: str) -> str:
         return ""
     
 
+def invert_abstract(inv_idx: dict | None) -> str:
+    """
+    Преобразует инвертированный индекс аннотации OpenAlex в читаемый текст.
+    Если inv_idx пуст или None, возвращает пустую строку.
+    """
+    if not inv_idx:
+        return ""
+
+    # Собираем все токены с их позициями
+    tokens = []
+    for word, positions in inv_idx.items():
+        for pos in positions:
+            tokens.append((pos, word))
+
+    # Сортируем по позиции
+    tokens.sort(key=lambda x: x[0])
+
+    # Соединяем слова в текст
+    return " ".join(word for _, word in tokens)
+
+
 def get_wikipedia_context(query: str) -> str:
     """Возвращает контекст из Wikipedia или пустую строку."""
     return search_wikipedia(query)
@@ -213,7 +234,7 @@ def search_openalex(query: str, per_page: int = 5):
         params = {
             "search": query,
             "per-page": per_page,
-            "select": "display_name,publication_year"
+            "select": "display_name,publication_year,abstract_inverted_index"
         }
 
         headers = {

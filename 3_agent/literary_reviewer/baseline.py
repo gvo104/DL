@@ -155,5 +155,7 @@ def run_baseline(topic: str, llm_call=call_llm, mode: str = "baseline"):
     return {
         "topic": topic,
         "answer": answer,
-        "n_papers": len(papers)
+        "n_papers": len(papers),
+        "wiki": wiki,
+        "papers_text": papers_text
     }
