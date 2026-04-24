@@ -1,6 +1,5 @@
 from baseline import run_baseline
 from llm import llm_call
-from utils.tools import search_wikipedia
 
 topics = [
     # "Agentic AI for customer support",

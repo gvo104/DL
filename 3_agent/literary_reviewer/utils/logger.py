@@ -45,3 +45,7 @@ class RunLogger:
     def save_meta(self, meta: dict):
         with open(os.path.join(self.run_path, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
+            
+    def save_context(self, context: str):
+        with open(os.path.join(self.run_path, "context.txt"), "w", encoding="utf-8") as f:
+            f.write(context)

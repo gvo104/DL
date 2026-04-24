@@ -2,7 +2,7 @@ from datetime import datetime
 import time
 
 from utils.llm_runtime import ensure_ollama_running, call_llm
-from utils.tools import search_wikipedia, search_openalex
+from utils.tools import get_enriched_context, search_openalex  # ← изменён импорт
 from utils.prompt_builder import build_prompt
 from utils.text_stats import estimate_sentences
 from utils.logger import RunLogger
@@ -38,7 +38,7 @@ def format_papers(papers):
 def run_baseline(topic: str, llm_call=call_llm, mode: str = "baseline"):
     """
     Baseline pipeline:
-    - Wikipedia context
+    - Enriched context (Wikipedia + CrossRef)
     - OpenAlex retrieval
     - single-pass LLM generation
     - full structured logging per run
@@ -55,17 +55,21 @@ def run_baseline(topic: str, llm_call=call_llm, mode: str = "baseline"):
     ensure_ollama_running(logger)
 
     # -------------------------
-    # 2. WIKIPEDIA
+    # 2. ENRICHED CONTEXT (Wikipedia + CrossRef)
     # -------------------------
     t0 = time.time()
-    wiki = search_wikipedia(topic)
+    wiki = get_enriched_context(topic)
 
     logger.log({
-        "event": "wikipedia",
+        "event": "context_enriched",
         "time_sec": round(time.time() - t0, 4),
-        "size": len(wiki)
+        "size": len(wiki),
+        "has_wikipedia": "Wikipedia" in wiki,
+        "has_crossref": "CrossRef" in wiki
     })
-
+    
+    logger.save_context(wiki)
+    
     # -------------------------
     # 3. OPENALEX
     # -------------------------
@@ -120,7 +124,9 @@ def run_baseline(topic: str, llm_call=call_llm, mode: str = "baseline"):
         "topic": topic,
         "mode": mode,
         "n_papers": len(papers),
-        "wiki_size": len(wiki),
+        "context_size": len(wiki),
+        "has_wikipedia": "Wikipedia" in wiki,
+        "has_crossref": "CrossRef" in wiki,
         "total_time_sec": round(time.time() - run_start, 4)
     })
 
