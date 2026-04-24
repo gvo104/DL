@@ -1,0 +1,17 @@
+name: deep_learn_env
+channels:
+  - defaults
+dependencies:
+  - python=3.14
+  - datasets
+  - matplotlib
+  - torchvision
+  - ipykernel
+  - scipy
+  - kagglehub
+  - wordcloud
+  - nltk
+  - scikit-learn
+  - pandas
+  - seaborn
+prefix: /home/penguin/miniconda3/envs/deep_learn_env
