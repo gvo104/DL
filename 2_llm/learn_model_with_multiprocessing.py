@@ -1,14 +1,23 @@
 import os
 import re
 import ast
+import gc
 import math
 import time
+import random
 import torch
-import multiprocessing
+import pandas as pd
 
 from datetime import datetime
+from tqdm import tqdm
+from sklearn.model_selection import train_test_split
+
 from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, get_linear_schedule_with_warmup
+from transformers import (
+    GPT2LMHeadModel,
+    GPT2Tokenizer,
+    get_linear_schedule_with_warmup
+)
 from torch.optim import AdamW
 
 # =========================
@@ -18,16 +27,22 @@ DATA_PATH = "data/"
 LINES_FILE = os.path.join(DATA_PATH, "movie_lines.txt")
 CONV_FILE = os.path.join(DATA_PATH, "movie_conversations.txt")
 
+MODEL_DIR = "model"
+
 BATCH_SIZE = 8
-EPOCHS = 3
-MAX_LEN = 128
+EPOCHS = 2
+MAX_LEN = 64
 WINDOW_SIZE = 4
+MAX_SAMPLES = 50000
+
+GRAD_ACCUM = 2
+LR = 3e-5
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # =========================
-# LOAD DATA
+# DATA LOAD
 # =========================
 def load_lines(path):
     id2line = {}
@@ -40,19 +55,21 @@ def load_lines(path):
 
 
 def load_conversations(path, id2line):
-    conversations = []
     with open(path, encoding="iso-8859-1") as f:
         for line in f:
             parts = line.split(" +++$+++ ")
             if len(parts) == 4:
-                line_ids = ast.literal_eval(parts[3])
-                conv = [id2line[i] for i in line_ids if i in id2line]
-                conversations.append(conv)
-    return conversations
+                try:
+                    ids = ast.literal_eval(parts[3])
+                    conv = [id2line[i] for i in ids if i in id2line]
+                    if len(conv) >= 2:
+                        yield conv
+                except:
+                    continue
 
 
 # =========================
-# CLEANING
+# CLEAN
 # =========================
 def clean(text):
     text = text.lower()
@@ -63,50 +80,62 @@ def clean(text):
 
 
 # =========================
-# BUILD WINDOWS (GPT STYLE)
-# =========================
-def build_windows(conversations, window_size=4):
-    samples = []
-
-    for conv in conversations:
-        conv = [clean(x) for x in conv if x]
-
-        if len(conv) < 2:
-            continue
-
-        for i in range(1, len(conv)):
-            start = max(0, i - window_size)
-            context = conv[start:i]
-            target = conv[i]
-
-            samples.append((context, target))
-
-    return samples
-
-
-SEP = " [SEP] "
-
-def to_text(context, target):
-    return SEP.join(context + [target])
-
-
-# =========================
 # DATASET
 # =========================
-class GPT2DialogDataset(Dataset):
-    def __init__(self, encodings):
-        self.input_ids = encodings["input_ids"]
-        self.attention_mask = encodings["attention_mask"]
+class LazyDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_len):
+        self.texts = texts
+        self.tokenizer = tokenizer
+        self.max_len = max_len
 
     def __len__(self):
-        return len(self.input_ids)
+        return len(self.texts)
 
     def __getitem__(self, idx):
+        enc = self.tokenizer(
+            self.texts[idx],
+            truncation=True,
+            padding="max_length",
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
         return {
-            "input_ids": self.input_ids[idx],
-            "attention_mask": self.attention_mask[idx],
-            "labels": self.input_ids[idx]
+            "input_ids": enc["input_ids"].squeeze(0),
+            "attention_mask": enc["attention_mask"].squeeze(0),
+            "labels": enc["input_ids"].squeeze(0),
         }
+
+
+# =========================
+# EVAL
+# =========================
+def evaluate(model, loader):
+    model.eval()
+    losses = []
+
+    with torch.no_grad():
+        for batch in loader:
+            input_ids = batch["input_ids"].to(DEVICE)
+            attn = batch["attention_mask"].to(DEVICE)
+
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attn,
+                labels=input_ids
+            )
+            losses.append(outputs.loss.item())
+
+    model.train()
+    return sum(losses) / len(losses)
+
+
+# =========================
+# MEMORY CLEAN
+# =========================
+def clear_mem():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 # =========================
@@ -114,44 +143,58 @@ class GPT2DialogDataset(Dataset):
 # =========================
 def train():
     print("Loading data...")
+
     id2line = load_lines(LINES_FILE)
-    conversations = load_conversations(CONV_FILE, id2line)
 
-    print("Building samples...")
-    samples = build_windows(conversations, WINDOW_SIZE)
-    dataset_texts = [to_text(c, t) for c, t in samples]
+    texts = []
+    for conv in load_conversations(CONV_FILE, id2line):
+        conv = [clean(x) for x in conv if x]
 
-    print("Total samples:", len(dataset_texts))
+        for i in range(1, len(conv)):
+            start = max(0, i - WINDOW_SIZE)
+            context = conv[start:i]
+            target = conv[i]
+            texts.append(" [SEP] ".join(context + [target]))
 
-    print("Tokenizing...")
+        if len(texts) >= MAX_SAMPLES:
+            break
+
+    random.shuffle(texts)
+    texts = texts[:MAX_SAMPLES]
+
+    train_texts, temp = train_test_split(texts, test_size=0.2, random_state=42)
+    val_texts, _ = train_test_split(temp, test_size=0.5, random_state=42)
+
+    print(f"Train={len(train_texts)} Val={len(val_texts)}")
+
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
-    encodings = tokenizer(
-        dataset_texts,
-        truncation=True,
-        padding=True,
-        max_length=MAX_LEN,
-        return_tensors="pt"
-    )
-
-    dataset = GPT2DialogDataset(encodings)
+    train_ds = LazyDataset(train_texts, tokenizer, MAX_LEN)
+    val_ds = LazyDataset(val_texts, tokenizer, MAX_LEN)
 
     train_loader = DataLoader(
-        dataset,
+        train_ds,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,          # ← теперь можно
+        num_workers=2,
         pin_memory=True
     )
 
-    print("Loading model...")
-    model = GPT2LMHeadModel.from_pretrained("gpt2")
-    model.to(DEVICE)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
 
-    optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+    model = GPT2LMHeadModel.from_pretrained("gpt2").to(DEVICE)
+    model.gradient_checkpointing_enable()
 
-    total_steps = len(train_loader) * EPOCHS
+    optimizer = AdamW(model.parameters(), lr=LR)
+
+    total_steps = (len(train_loader) * EPOCHS) // GRAD_ACCUM
 
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -161,60 +204,104 @@ def train():
 
     scaler = torch.cuda.amp.GradScaler()
 
-    print("Start training...")
-    model.train()
+    # =========================
+    # LOGS
+    # =========================
+    logs = []
+
+    best_val = float("inf")
+    patience = 2
+    wait = 0
+
+    print("Training started...")
+
+    global_step = 0
 
     for epoch in range(EPOCHS):
+        model.train()
         total_loss = 0
-        start_time = time.time()
 
-        for i, batch in enumerate(train_loader):
-            input_ids = batch["input_ids"].to(DEVICE, non_blocking=True)
-            attention_mask = batch["attention_mask"].to(DEVICE, non_blocking=True)
+        bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+
+        optimizer.zero_grad()
+
+        for step, batch in enumerate(bar):
+            input_ids = batch["input_ids"].to(DEVICE)
+            attn = batch["attention_mask"].to(DEVICE)
 
             with torch.cuda.amp.autocast():
-                outputs = model(
+                out = model(
                     input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=input_ids
+                    attention_mask=attn,
+                    labels=input_ids,
+                    use_cache=False
                 )
-                loss = outputs.loss
+                loss = out.loss / GRAD_ACCUM
 
-            optimizer.zero_grad()
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
 
-            total_loss += loss.item()
+            if (step + 1) % GRAD_ACCUM == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
 
-            if i % 500 == 0:
-                print(f"Epoch {epoch+1} | Batch {i} | Loss {loss.item():.4f}")
+            total_loss += loss.item() * GRAD_ACCUM
 
-        avg_loss = total_loss / len(train_loader)
-        ppl = math.exp(avg_loss)
+            bar.set_postfix(loss=loss.item() * GRAD_ACCUM)
 
-        print(f"\nEpoch {epoch+1} DONE")
-        print(f"Loss: {avg_loss:.4f}")
-        print(f"Perplexity: {ppl:.2f}")
-        print(f"Time: {time.time() - start_time:.2f}s")
-        print("-" * 40)
+            global_step += 1
+
+        train_loss = total_loss / len(train_loader)
+        val_loss = evaluate(model, val_loader)
+        ppl = math.exp(val_loss)
+
+        lr = scheduler.get_last_lr()[0]
+
+        logs.append({
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "perplexity": ppl,
+            "lr": lr
+        })
+
+        print(f"\nEpoch {epoch+1}")
+        print(f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} ppl={ppl:.2f}")
+
+        # =========================
+        # EARLY STOP
+        # =========================
+        if val_loss < best_val:
+            best_val = val_loss
+            wait = 0
+
+            # SAVE ONLY WEIGHTS
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            save_path = os.path.join(MODEL_DIR, f"gpt2_weights_{ts}.pt")
+
+            torch.save(model.state_dict(), save_path)
+            print("Saved:", save_path)
+
+        else:
+            wait += 1
+            if wait >= patience:
+                print("Early stopping")
+                break
+
+        clear_mem()
 
     # =========================
-    # SAVE
+    # SAVE LOGS
     # =========================
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    save_path = f"model/gpt2-dialog_{timestamp}"
+    df = pd.DataFrame(logs)
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
-    model.save_pretrained(save_path)
-    tokenizer.save_pretrained(save_path)
+    log_path = os.path.join(MODEL_DIR, "train_log.csv")
+    df.to_csv(log_path, index=False)
 
-    print("Model saved to:", save_path)
+    print("Logs saved:", log_path)
 
 
-# =========================
-# ENTRY POINT (ВАЖНО!)
-# =========================
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn", force=True)
     train()
