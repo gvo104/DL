@@ -2,8 +2,8 @@ from baseline import run_baseline
 from llm import llm_call
 
 topics = [
-    # "Agentic AI for customer support",
-    # "Graph RAG for enterprise knowledge systems",
+    "Agentic AI for customer support",
+    "Graph RAG for enterprise knowledge systems",
     "LLM evaluation and process-aware metrics"
 ]
 

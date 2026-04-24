@@ -9,6 +9,7 @@ from config import TIMEOUT, WIKIPEDIA_HEADERS, APP_NAME
 def search_wikipedia(query: str) -> str:
     """
     Поиск по Wikipedia с несколькими стратегиями + проверка релевантности.
+    Возвращает обрезанный summary (до 600 символов).
     """
     strategies = [
         {"srsearch": query, "srwhat": "title"},
@@ -80,7 +81,8 @@ def search_wikipedia(query: str) -> str:
                 is_irrelevant = any(domain in text_to_check for domain in irrelevant_domains)
                 
                 if matches >= min_matches and not is_irrelevant:
-                    return extract
+                    # Обрезаем до 600 символов — Wikipedia часто раздут
+                    return extract[:600] + "..." if len(extract) > 600 else extract
 
         return ""
 
@@ -92,7 +94,7 @@ def search_wikipedia(query: str) -> str:
 def search_crossref(query: str) -> str:
     """
     Поиск научных статей через CrossRef API (публичный, без ключа).
-    Возвращает заголовки и abstracts релевантных статей.
+    Возвращает ТОЛЬКО abstracts с заголовками в кратком формате.
     """
     try:
         url = "https://api.crossref.org/works"
@@ -121,65 +123,75 @@ def search_crossref(query: str) -> str:
             title = item.get("title", [""])[0] if item.get("title") else "Без названия"
             abstract = item.get("abstract", "")
             if abstract:
-                # Очистка: удаляем ВСЁ, что похоже на HTML/XML
-                # 1. JATS-теги (научная разметка)
-                abstract = re.sub(r'</?jats:[^>]+>', ' ', abstract)
-                abstract = re.sub(r'</?jats[^>]*>', ' ', abstract)
+                # =============================================
+                # ТРОЙНАЯ ОЧИСТКА — ничего не переживёт
+                # =============================================
                 
-                # 2. Двойное экранирование
-                abstract = re.sub(r'&lt;/?\w+&gt;', ' ', abstract)
+                # Проход 1: удаляем ВСЁ между < и > (теги + двойное экранирование)
+                abstract = re.sub(r'<[^>]*>', ' ', abstract)
                 
-                # 3. Обычные теги
-                abstract = re.sub(r'</?\w+>', ' ', abstract)
-                abstract = re.sub(r'<\s*>', ' ', abstract)
+                # Проход 2: удаляем &lt;...&gt; (двойное экранирование тегов)
+                abstract = re.sub(r'&lt;[^&]*&gt;', ' ', abstract)
                 
-                # 4. Декодируем HTML entities
+                # Проход 3: декодируем оставшиеся HTML entities
                 abstract = abstract.replace('&amp;nbsp;', ' ')
                 abstract = abstract.replace('&amp;lt;', '')
                 abstract = abstract.replace('&amp;gt;', '')
                 abstract = abstract.replace('&amp;amp;', '&')
-                abstract = abstract.replace('&amp;quot;', '"')
                 abstract = abstract.replace('&nbsp;', ' ')
                 abstract = abstract.replace('&lt;', '')
                 abstract = abstract.replace('&gt;', '')
                 abstract = abstract.replace('&amp;', '&')
-                abstract = abstract.replace('&quot;', '"')
                 
-                # 5. Чистим пробелы
+                # Чистим пробелы
                 abstract = re.sub(r'\s+', ' ', abstract).strip()
                 
-                # Чистим заголовок тоже
-                title = re.sub(r'</?jats:[^>]+>', '', title)
-                title = re.sub(r'&lt;/?\w+&gt;', '', title)
-                title = re.sub(r'</?\w+>', '', title)
-                title = title.replace('&amp;nbsp;', ' ')
+                # Чистим заголовок так же
+                title = re.sub(r'<[^>]*>', '', title)
+                title = re.sub(r'&lt;[^&]*&gt;', '', title)
+                title = title.replace('&amp;nbsp;', ' ').replace('&nbsp;', ' ')
                 title = re.sub(r'\s+', ' ', title).strip()
                 
-                context_parts.append(f"{title}: {abstract}")
+                # Обрезаем
+                short_abstract = abstract[:1000]
+                if len(abstract) > 1000:
+                    short_abstract += "..."
+                
+                context_parts.append(f"[{title}]: {short_abstract}")
 
         return "\n\n".join(context_parts) if context_parts else ""
 
     except Exception as e:
         print(f"CROSSREF ERROR: {e}")
         return ""
+    
+
+def get_wikipedia_context(query: str) -> str:
+    """Возвращает контекст из Wikipedia или пустую строку."""
+    return search_wikipedia(query)
+
+
+def get_crossref_context(query: str) -> str:
+    """Возвращает контекст из CrossRef или пустую строку."""
+    return search_crossref(query)
 
 
 def get_enriched_context(query: str) -> str:
     """
-    Собирает контекст из Wikipedia + CrossRef.
-    Возвращает комбинированный текст или сообщение об отсутствии данных.
+    Собирает контекст. Приоритет: CrossRef > Wikipedia.
+    Wikipedia используется только если CrossRef не дал результатов.
     """
     contexts = []
 
-    # Wikipedia
-    wiki = search_wikipedia(query)
-    if wiki:
-        contexts.append(("Wikipedia", wiki))
-
-    # CrossRef
+    # CrossRef — основной источник для научных тем
     cr = search_crossref(query)
     if cr:
         contexts.append(("CrossRef", cr))
+    else:
+        # Wikipedia — fallback
+        wiki = search_wikipedia(query)
+        if wiki:
+            contexts.append(("Wikipedia", wiki))
 
     if not contexts:
         return "[Нет релевантной информации в доступных источниках]"
