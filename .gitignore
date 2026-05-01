@@ -2,3 +2,8 @@
 1_tensor/data
 2_llm/data
 2_llm/model
+4_VAE/__pycache__
+*.png
+*pkl
+*.keras
+*.npy
