@@ -3,18 +3,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from pipeline import PipelineStep
-from step03_vae import sampling   # импорт зарегистрированной функции
+from step03_vae import sampling   # функция для Lambda-слоя
 
 
 class GenerateStep(PipelineStep):
-    def __init__(self, config, force=False):
-        super().__init__("04_generate", config, force)
-        self.decoder_path = os.path.join(config.CACHE_DIR, "vae_decoder.keras")
-        self.encoder_path = os.path.join(config.CACHE_DIR, "vae_encoder.keras")
-        self.latent_dim = 2
+    def __init__(self, config, force=False, latent_dim=None):
+        # Берём размерность из конфига, если не передана явно
+        if latent_dim is None:
+            latent_dim = config.LATENT_DIMS[0]
+        super().__init__(f"04_generate_dim{latent_dim}", config, force)
+        self.latent_dim = latent_dim
+        self.decoder_path = os.path.join(config.CACHE_DIR, f"vae_decoder_dim{latent_dim}.keras")
+        self.encoder_path = os.path.join(config.CACHE_DIR, f"vae_encoder_dim{latent_dim}.keras")
 
     def run(self):
-        # Загружаем модели с указанием custom_objects
+        # Загружаем модели с custom_objects
         decoder = tf.keras.models.load_model(
             self.decoder_path, compile=False,
             custom_objects={'sampling': sampling}
@@ -32,8 +35,11 @@ class GenerateStep(PipelineStep):
         # 2. Интерполяция
         self._interpolation(decoder)
 
-        # 3. Сетка латентного пространства
-        self._latent_grid(decoder)
+        # 3. Сетка латентного пространства (только для dim=2)
+        if self.latent_dim == 2:
+            self._latent_grid(decoder)
+        else:
+            print("Сетка латентного пространства доступна только для dim=2, пропускаем.")
 
         # 4. Добавление шума
         self._noise_experiment(decoder, x_test, encoder)

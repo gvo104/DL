@@ -9,8 +9,8 @@ class Config:
     # Данные
     VALIDATION_SPLIT = 0.1
     BATCH_SIZE = 256
-    EPOCHS_AE = 10
-    EPOCHS_VAE = 20
+    EPOCHS_AE = 30
+    EPOCHS_VAE = 30
 
     # Аугментация
     AUGMENTATION = {
@@ -21,7 +21,7 @@ class Config:
     }
 
     # Размерности латентного пространства для экспериментов
-    LATENT_DIMS = [2, 8, 16]
+    LATENT_DIMS = [2]
 
     @classmethod
     def init_dirs(cls):

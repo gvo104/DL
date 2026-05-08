@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Flatten, Reshape
 from pipeline import PipelineStep
+from sklearn.metrics import mean_squared_error
 
 class AEStep(PipelineStep):
     def __init__(self, config, force=False):
@@ -12,21 +13,24 @@ class AEStep(PipelineStep):
         self.model_path = os.path.join(config.CACHE_DIR, "ae_model.keras")
 
     def run(self):
-        # Загружаем данные (они уже должны быть подготовлены)
+        # Загружаем данные из шага 1
         x_train = np.load(os.path.join(self.config.CACHE_DIR, "x_train.npy"))
         x_test  = np.load(os.path.join(self.config.CACHE_DIR, "x_test.npy"))
 
-        # Архитектура AE
+        # Улучшенная архитектура: 256 → 128 → 64 → 128 → 256 → 784
         input_img = Input(shape=(28, 28, 1))
         x = Flatten()(input_img)
-        encoded = Dense(64, activation='relu')(x)
-        decoded = Dense(28 * 28, activation='sigmoid')(encoded)
+        x = Dense(256, activation='relu')(x)
+        x = Dense(128, activation='relu')(x)
+        encoded = Dense(64, activation='relu')(x)       # bottleneck 64
+        x = Dense(128, activation='relu')(encoded)
+        x = Dense(256, activation='relu')(x)
+        decoded = Dense(28*28, activation='sigmoid')(x)
         decoded = Reshape((28, 28, 1))(decoded)
 
         autoencoder = Model(input_img, decoded)
         autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
 
-        # Обучение
         history = autoencoder.fit(
             x_train, x_train,
             epochs=self.config.EPOCHS_AE,
@@ -35,7 +39,6 @@ class AEStep(PipelineStep):
             verbose=1
         )
 
-        # Сохраняем модель
         autoencoder.save(self.model_path)
         print(f"Модель сохранена: {self.model_path}")
 
@@ -43,15 +46,23 @@ class AEStep(PipelineStep):
         reconstructed = autoencoder.predict(x_test[:10], verbose=0)
         self._visualize(x_test[:10], reconstructed)
 
-        # Собираем метрики
-        mse_train = history.history['loss'][-1]
-        mse_val   = history.history['val_loss'][-1] if 'val_loss' in history.history else None
+        # Вычисляем MSE на всём тестовом наборе для сравнения
+        test_reconstructed = autoencoder.predict(x_test, verbose=0)
+        x_test_flat = x_test.reshape(len(x_test), -1)
+        test_reconstructed_flat = test_reconstructed.reshape(len(test_reconstructed), -1)
+        mse_test = mean_squared_error(x_test_flat, test_reconstructed_flat)
+
+        # Сохраняем последние BCE (для кривых обучения)
+        loss_train = history.history['loss'][-1]
+        loss_val   = history.history['val_loss'][-1] if 'val_loss' in history.history else None
 
         return {
             "model_path": self.model_path,
             "history": history.history,
-            "mse_train": mse_train,
-            "mse_val": mse_val
+            "loss_train": loss_train,
+            "loss_val": loss_val,
+            "mse_test": mse_test,
+            "test_reconstructed_flat": test_reconstructed_flat   # пригодится для сравнения
         }
 
     def _visualize(self, originals, reconstructed):
