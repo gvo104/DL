@@ -11,6 +11,7 @@ from config import Config
 from pipeline import (
     load_numpy,
     save_numpy,
+    save_pickle,
     plot_class_distribution,
     plot_image_rows,
 )
@@ -22,7 +23,9 @@ def _dataset_to_numpy(dataset: datasets.MNIST) -> tuple[np.ndarray, np.ndarray]:
     return x.astype(np.float32), y.astype(np.int64)
 
 
-def _load_or_build_arrays(cfg: Config, train_dataset, test_dataset) -> dict[str, np.ndarray]:
+def _load_or_build_arrays(
+    cfg: Config, train_dataset: datasets.MNIST, test_dataset: datasets.MNIST
+) -> dict[str, np.ndarray]:
     paths = {
         "x_train": cfg.cache_dir / "x_train.npy",
         "x_test": cfg.cache_dir / "x_test.npy",
@@ -30,10 +33,7 @@ def _load_or_build_arrays(cfg: Config, train_dataset, test_dataset) -> dict[str,
         "y_test": cfg.cache_dir / "y_test.npy",
     }
 
-    if (
-        not cfg.force_retrain
-        and all(path.exists() for path in paths.values())
-    ):
+    if not cfg.force_retrain and all(p.exists() for p in paths.values()):
         return {
             "x_train": load_numpy(paths["x_train"]).astype(np.float32),
             "x_test": load_numpy(paths["x_test"]).astype(np.float32),
@@ -44,51 +44,30 @@ def _load_or_build_arrays(cfg: Config, train_dataset, test_dataset) -> dict[str,
     x_train, y_train = _dataset_to_numpy(train_dataset)
     x_test, y_test = _dataset_to_numpy(test_dataset)
 
-    save_numpy(paths["x_train"], x_train)
-    save_numpy(paths["x_test"], x_test)
-    save_numpy(paths["y_train"], y_train)
-    save_numpy(paths["y_test"], y_test)
+    for key, arr in zip(("x_train", "x_test", "y_train", "y_test"),
+                        (x_train, x_test, y_train, y_test)):
+        save_numpy(paths[key], arr)
 
-    return {
-        "x_train": x_train,
-        "x_test": x_test,
-        "y_train": y_train,
-        "y_test": y_test,
-    }
+    return {"x_train": x_train, "x_test": x_test,
+            "y_train": y_train, "y_test": y_test}
 
 
 def run(cfg: Config) -> dict[str, Any]:
     transform = transforms.ToTensor()
 
     train_dataset = datasets.MNIST(
-        root=str(cfg.data_dir),
-        train=True,
-        download=True,
-        transform=transform,
-    )
+        root=str(cfg.data_dir), train=True, download=True, transform=transform)
     test_dataset = datasets.MNIST(
-        root=str(cfg.data_dir),
-        train=False,
-        download=True,
-        transform=transform,
-    )
+        root=str(cfg.data_dir), train=False, download=True, transform=transform)
 
     pin_memory = cfg.pin_memory and torch.cuda.is_available()
 
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        num_workers=cfg.num_workers,
-        pin_memory=pin_memory,
-    )
+        train_dataset, batch_size=cfg.batch_size, shuffle=True,
+        num_workers=cfg.num_workers, pin_memory=pin_memory)
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=cfg.eval_batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=pin_memory,
-    )
+        test_dataset, batch_size=cfg.eval_batch_size, shuffle=False,
+        num_workers=cfg.num_workers, pin_memory=pin_memory)
 
     arrays = _load_or_build_arrays(cfg, train_dataset, test_dataset)
     x_train = arrays["x_train"]
@@ -111,28 +90,22 @@ def run(cfg: Config) -> dict[str, Any]:
         "test_class_counts": np.bincount(y_test, minlength=10).astype(int).tolist(),
     }
 
-    from pipeline import save_pickle
-
     save_pickle(summary, cfg.cache_dir / "01_data_loader.pkl")
 
     # Preview: original vs augmented
-    aug_transform = transforms.Compose(
-        [
-            transforms.RandomRotation(cfg.rotation_deg),
-            transforms.RandomAffine(0, translate=(cfg.translate_frac, cfg.translate_frac)),
-            transforms.ToTensor(),
-        ]
-    )
+    aug_transform = transforms.Compose([
+        transforms.RandomRotation(cfg.rotation_deg),
+        transforms.RandomAffine(0, translate=(cfg.translate_frac, cfg.translate_frac)),
+        transforms.ToTensor(),
+    ])
     aug_dataset = datasets.MNIST(
-        root=str(cfg.data_dir),
-        train=True,
-        download=False,
-        transform=aug_transform,
-    )
+        root=str(cfg.data_dir), train=True, download=False, transform=aug_transform)
 
     n_preview = 10
-    originals = np.stack([train_dataset[i][0].squeeze(0).numpy() for i in range(n_preview)], axis=0)
-    augmented = np.stack([aug_dataset[i][0].squeeze(0).numpy() for i in range(n_preview)], axis=0)
+    originals = np.stack(
+        [train_dataset[i][0].squeeze(0).numpy() for i in range(n_preview)], axis=0)
+    augmented = np.stack(
+        [aug_dataset[i][0].squeeze(0).numpy() for i in range(n_preview)], axis=0)
 
     plot_image_rows(
         [originals, augmented],
@@ -147,18 +120,16 @@ def run(cfg: Config) -> dict[str, Any]:
         summary["train_class_counts"],
         summary["test_class_counts"],
         save_path=cfg.figures_dir / "01_class_distribution.png",
-        title="MNIST: распределение классов train / test",
+        title="Распределение классов (train / test)",
         dpi=cfg.fig_dpi,
         show=cfg.show_plots,
     )
 
     print(f"Train: {summary['train_size']}  Test: {summary['test_size']}")
-    print(
-        f"Pixels: min={summary['pixel_min']:.4f}, "
-        f"max={summary['pixel_max']:.4f}, "
-        f"mean={summary['pixel_mean']:.4f}, "
-        f"std={summary['pixel_std']:.4f}"
-    )
+    print(f"Pixels: min={summary['pixel_min']:.4f}, "
+          f"max={summary['pixel_max']:.4f}, "
+          f"mean={summary['pixel_mean']:.4f}, "
+          f"std={summary['pixel_std']:.4f}")
 
     return {
         "train_dataset": train_dataset,

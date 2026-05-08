@@ -59,10 +59,8 @@ def _flatten(imgs: torch.Tensor) -> torch.Tensor:
 
 
 def vae_loss_fn(
-    recon_x: torch.Tensor,
-    x: torch.Tensor,
-    mu: torch.Tensor,
-    log_var: torch.Tensor,
+    recon_x: torch.Tensor, x: torch.Tensor,
+    mu: torch.Tensor, log_var: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bce = F.binary_cross_entropy(recon_x, x, reduction="sum")
     kl = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
@@ -133,7 +131,8 @@ def _load_or_train(cfg: Config, device: torch.device, train_loader):
         print("VAE cache is incompatible. Retraining...")
 
     model = VAE(latent_dim=cfg.vae_latent_dim).to(device)
-    bce_history, kl_history = train_vae(model, train_loader, device, epochs=cfg.vae_epochs, lr=cfg.lr)
+    bce_history, kl_history = train_vae(model, train_loader, device,
+                                        epochs=cfg.vae_epochs, lr=cfg.lr)
 
     save_pickle(
         {
@@ -189,7 +188,7 @@ def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, An
 
     plot_image_rows(
         [originals, reconstructions],
-        ["Оригинал", "VAE"],
+        ["Оригинал", "VAE (реконструкция)"],
         save_path=cfg.figures_dir / "03_vae_reconstruction_dim2.png",
         title="VAE: оригинал и реконструкция",
         dpi=cfg.fig_dpi,

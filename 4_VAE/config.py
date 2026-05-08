@@ -6,43 +6,53 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    # Paths
+    # ---------- Paths ----------
     project_root: Path = Path(__file__).resolve().parent
     data_dir: Path = field(init=False)
     output_dir: Path = field(init=False)
     cache_dir: Path = field(init=False)
     figures_dir: Path = field(init=False)
 
-    # Reproducibility
+    # ---------- Reproducibility ----------
     seed: int = 42
 
-    # Cache schema
-    cache_version: int = 2
+    # ---------- Cache ----------
+    cache_version: int = 3
 
-    # Data
+    # ---------- Data ----------
     batch_size: int = 256
     eval_batch_size: int = 512
     num_workers: int = 0
     pin_memory: bool = False
     small_subset_size: int = 5000
 
-    # Augmentation
+    # ---------- Augmentation ----------
     rotation_deg: int = 15
     translate_frac: float = 0.1
 
-    # Models
+    # ---------- Standard AE / VAE ----------
     ae_latent_dim: int = 64
-    vae_latent_dim: int = 2
-    pca_components: int = 64
-    pca_ae_latent_dim: int = 16
-
-    # Training
     ae_epochs: int = 20
+
+    vae_latent_dim: int = 2
     vae_epochs: int = 20
+
+    # PCA – auto‑fit to reach variance threshold
+    pca_auto_components: bool = True
+    pca_variance_threshold: float = 0.95
+    pca_fallback_components: int = 64          # used only if auto fails or flag is False
+    pca_ae_latent_dim: int = 16
     pca_ae_epochs: int = 10
+
     lr: float = 1e-3
 
-    # Generation
+    # ---------- Improved β‑VAE (Step 06) ----------
+    improved_latent_dim: int = 2
+    improved_vae_epochs: int = 20
+    beta_max: float = 0.0005
+    anneal_epochs: int = 17
+
+    # ---------- Generation & visualisation ----------
     noise_factor: float = 0.3
     latent_grid_min: float = -3.0
     latent_grid_max: float = 3.0
@@ -51,17 +61,11 @@ class Config:
     noise_levels: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)
     generated_samples: int = 10
 
-    # Visualization
     fig_dpi: int = 160
     show_plots: bool = False
 
-    # Runtime
+    # ---------- Runtime ----------
     force_retrain: bool = False
-    
-    # Step 06
-    latent_dim_improved = 8
-    beta_max = 4.0
-    anneal_epochs = 10
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", self.project_root / "data")

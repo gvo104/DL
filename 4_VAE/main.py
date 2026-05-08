@@ -13,10 +13,12 @@ from step06_vae_improved import run as run_step06
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MNIST AE/VAE pipeline")
-    parser.add_argument("--show-plots", action="store_true", help="Показывать графики на экране")
-    parser.add_argument("--force-retrain", action="store_true", help="Игнорировать кэш и переобучить модели")
-    parser.add_argument("--seed", type=int, default=42, help="Seed")
+    parser = argparse.ArgumentParser(description="MNIST AE/VAE/β-VAE pipeline")
+    parser.add_argument("--show-plots", action="store_true",
+                        help="Показывать графики на экране")
+    parser.add_argument("--force-retrain", action="store_true",
+                        help="Игнорировать кеш и переобучить модели")
+    parser.add_argument("--seed", type=int, default=42, help="Глобальный seed")
     return parser.parse_args()
 
 
@@ -30,26 +32,28 @@ def main() -> None:
     )
 
     set_seed(cfg.seed)
-    device = prepare_environment(cfg.output_dir, cfg.cache_dir, cfg.figures_dir, cfg.data_dir)
+    device = prepare_environment(cfg.output_dir, cfg.cache_dir,
+                                 cfg.figures_dir, cfg.data_dir)
 
     print(f"Device: {device}")
-    print("Step 01: loading data")
+
+    print("\nStep 01: Loading data")
     data = run_step01(cfg)
 
-    print("\nStep 02: training / loading AE")
+    print("\nStep 02: AE")
     ae_result = run_step02(cfg, data, device)
 
-    print("\nStep 03: training / loading VAE")
+    print("\nStep 03: VAE (2D)")
     vae_result = run_step03(cfg, data, device)
 
-    print("\nStep 04: generation experiments")
-    _ = run_step04(cfg, data, vae_result["model"], device)
+    print("\nStep 04: Generation experiments")
+    run_step04(cfg, data, vae_result["model"], device)
 
-    print("\nStep 05: comparison")
-    _ = run_step05(cfg, data, ae_result["model"], vae_result["model"], device)
-    
-    print("\nStep 06: improve")
-    _ = run_step06(cfg, data, device)
+    print("\nStep 05: Comparison")
+    run_step05(cfg, data, ae_result["model"], vae_result["model"], device)
+
+    print("\nStep 06: Improved β-VAE")
+    run_step06(cfg, data, device)
 
     print("\nDone. Figures and caches are saved in output/.")
 

@@ -46,7 +46,7 @@ def _flatten(imgs: torch.Tensor) -> torch.Tensor:
 
 def train_ae(
     model: Autoencoder,
-    loader,
+    loader: torch.utils.data.DataLoader,
     device: torch.device,
     *,
     epochs: int,
@@ -119,7 +119,9 @@ def _load_or_train(cfg: Config, device: torch.device, train_loader):
 
 
 @torch.no_grad()
-def _reconstruct(model: Autoencoder, loader, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+def _reconstruct(
+    model: Autoencoder, loader, device: torch.device
+) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     xs, recons = [], []
 
@@ -143,7 +145,7 @@ def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, An
 
     plot_image_rows(
         [originals, reconstructions],
-        ["Оригинал", "AE"],
+        ["Оригинал", "AE (реконструкция)"],
         save_path=cfg.figures_dir / "02_ae_reconstruction.png",
         title="Autoencoder: оригинал и реконструкция",
         dpi=cfg.fig_dpi,
