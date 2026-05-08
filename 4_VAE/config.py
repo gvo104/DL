@@ -1,29 +1,83 @@
-import os
+from __future__ import annotations
 
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
 class Config:
-    # Пути
-    OUTPUT_DIR = "output"
-    CACHE_DIR = os.path.join(OUTPUT_DIR, "cache")
-    FIGURES_DIR = os.path.join(OUTPUT_DIR, "figures")
+    # Paths
+    project_root: Path = Path(__file__).resolve().parent
+    data_dir: Path = field(init=False)
+    output_dir: Path = field(init=False)
+    cache_dir: Path = field(init=False)
+    figures_dir: Path = field(init=False)
 
-    # Данные
-    VALIDATION_SPLIT = 0.1
-    BATCH_SIZE = 256
-    EPOCHS_AE = 30
-    EPOCHS_VAE = 30
+    # Reproducibility
+    seed: int = 42
 
-    # Аугментация
-    AUGMENTATION = {
-        "rotation_range": 15,
-        "width_shift_range": 0.1,
-        "height_shift_range": 0.1,
-        "zoom_range": 0.1
-    }
+    # Cache schema
+    cache_version: int = 2
 
-    # Размерности латентного пространства для экспериментов
-    LATENT_DIMS = [2]
+    # Data
+    batch_size: int = 256
+    eval_batch_size: int = 512
+    num_workers: int = 0
+    pin_memory: bool = False
+    small_subset_size: int = 5000
 
-    @classmethod
-    def init_dirs(cls):
-        os.makedirs(cls.CACHE_DIR, exist_ok=True)
-        os.makedirs(cls.FIGURES_DIR, exist_ok=True)
+    # Augmentation
+    rotation_deg: int = 15
+    translate_frac: float = 0.1
+
+    # Models
+    ae_latent_dim: int = 64
+    vae_latent_dim: int = 2
+    pca_components: int = 64
+    pca_ae_latent_dim: int = 16
+
+    # Training
+    ae_epochs: int = 20
+    vae_epochs: int = 20
+    pca_ae_epochs: int = 10
+    lr: float = 1e-3
+
+    # Generation
+    noise_factor: float = 0.3
+    latent_grid_min: float = -3.0
+    latent_grid_max: float = 3.0
+    latent_grid_size: int = 10
+    interpolation_steps: int = 10
+    noise_levels: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)
+    generated_samples: int = 10
+
+    # Visualization
+    fig_dpi: int = 160
+    show_plots: bool = False
+
+    # Runtime
+    force_retrain: bool = False
+    
+    # Step 06
+    latent_dim_improved = 8
+    beta_max = 4.0
+    anneal_epochs = 10
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data_dir", self.project_root / "data")
+        object.__setattr__(self, "output_dir", self.project_root / "output")
+        object.__setattr__(self, "cache_dir", self.output_dir / "cache")
+        object.__setattr__(self, "figures_dir", self.output_dir / "figures")
+
+
+def get_config(
+    *,
+    show_plots: bool = False,
+    force_retrain: bool = False,
+    seed: int = 42,
+) -> Config:
+    return Config(
+        seed=seed,
+        show_plots=show_plots,
+        force_retrain=force_retrain,
+    )

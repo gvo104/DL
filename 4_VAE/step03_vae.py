@@ -1,147 +1,220 @@
-import os
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
-import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense, Flatten, Reshape, Lambda, Layer
-from tensorflow.keras import backend as K
-from pipeline import PipelineStep
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from config import Config
+from pipeline import cpu_state_dict, load_pickle, save_pickle, plot_dual_curve, plot_image_rows
 
 
-# Регистрируем функцию сэмплирования, чтобы Keras мог сериализовать Lambda-слой
-@tf.keras.utils.register_keras_serializable()
-def sampling(args):
-    mu, log_var = args
-    epsilon = K.random_normal(shape=K.shape(mu))
-    return mu + K.exp(0.5 * log_var) * epsilon
-
-
-class VAELossLayer(Layer):
-    """Потери VAE: сумма по пикселям и латентным размерностям, усреднённая по батчу."""
-    def __init__(self, beta=0.0005, **kwargs):
-        super().__init__(**kwargs)
-        self.beta = beta
-
-    def call(self, inputs):
-        x, x_decoded, mu, log_var = inputs
-        batch_size = tf.cast(tf.shape(x)[0], tf.float32)
-        # BCE как в PyTorch: сумма по всем пикселям, делённая на размер батча
-        recon = tf.reduce_sum(
-            tf.keras.losses.binary_crossentropy(
-                tf.reshape(x, [-1, 28*28]),
-                tf.reshape(x_decoded, [-1, 28*28])
-            )
-        ) / batch_size
-        # KL как в PyTorch
-        kl = -0.5 * tf.reduce_sum(1 + log_var - tf.square(mu) - tf.exp(log_var)) / batch_size
-        loss = recon + self.beta * kl
-        self.add_loss(loss)
-        return x_decoded
-
-
-class VAEStep(PipelineStep):
-    def __init__(self, config, force=False, latent_dim=None):
-        # Берём размерность из конфига, если не передана явно
-        if latent_dim is None:
-            latent_dim = config.LATENT_DIMS[0]
-        super().__init__(f"03_vae_dim{latent_dim}", config, force)
+class VAE(nn.Module):
+    def __init__(self, input_dim: int = 784, latent_dim: int = 2):
+        super().__init__()
+        self.input_dim = input_dim
         self.latent_dim = latent_dim
-        self.encoder_path = os.path.join(config.CACHE_DIR, f"vae_encoder_dim{latent_dim}.keras")
-        self.decoder_path = os.path.join(config.CACHE_DIR, f"vae_decoder_dim{latent_dim}.keras")
-        self.full_model_path = os.path.join(config.CACHE_DIR, f"vae_full_dim{latent_dim}.keras")
 
-    def run(self):
-        # Загружаем данные
-        x_train = np.load(os.path.join(self.config.CACHE_DIR, "x_train.npy"))
-        x_test  = np.load(os.path.join(self.config.CACHE_DIR, "x_test.npy"))
-        y_test  = np.load(os.path.join(self.config.CACHE_DIR, "y_test.npy"))
+        self.encoder_h = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+        )
+        self.fc_mu = nn.Linear(128, latent_dim)
+        self.fc_log_var = nn.Linear(128, latent_dim)
 
-        # Архитектура из PyTorch: 256 → 128 → latent_dim
-        input_img = Input(shape=(28, 28, 1), name='input_img')
-        x = Flatten()(input_img)
-        x = Dense(256, activation='relu')(x)
-        x = Dense(128, activation='relu')(x)
-        mu = Dense(self.latent_dim, name='mu')(x)
-        log_var = Dense(self.latent_dim, name='log_var')(x)
-
-        z = Lambda(sampling, output_shape=(self.latent_dim,), name='z')([mu, log_var])
-
-        # Декодер: зеркальное отражение
-        decoder_input = Input(shape=(self.latent_dim,))
-        decoder_h = Dense(128, activation='relu')(decoder_input)
-        decoder_h = Dense(256, activation='relu')(decoder_h)
-        decoder_output = Dense(28*28, activation='sigmoid')(decoder_h)
-        decoder_output = Reshape((28, 28, 1))(decoder_output)
-        decoder = Model(decoder_input, decoder_output, name='decoder')
-
-        decoded = decoder(z)
-        decoded = VAELossLayer(beta=1.0, name='vae_loss_layer')([input_img, decoded, mu, log_var])
-
-        vae = Model(input_img, decoded)
-        vae.compile(optimizer='adam')
-
-        # Обучение
-        history = vae.fit(
-            x_train, x_train,
-            epochs=self.config.EPOCHS_VAE,
-            batch_size=self.config.BATCH_SIZE,
-            validation_split=self.config.VALIDATION_SPLIT,
-            verbose=1
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, input_dim),
+            nn.Sigmoid(),
         )
 
-        # Сохраняем модели
-        vae.save(self.full_model_path)
+    def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.encoder_h(x)
+        return self.fc_mu(h), self.fc_log_var(h)
 
-        encoder = Model(input_img, z, name='encoder')
-        encoder.save(self.encoder_path)
-        decoder.save(self.decoder_path)
+    def reparameterize(self, mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
 
-        # Реконструкция
-        reconstructed = vae.predict(x_test[:10], verbose=0)
-        self._visualize_reconstruction(x_test[:10], reconstructed)
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        return self.decoder(z)
 
-        # Латентное пространство (только для dim=2)
-        if self.latent_dim == 2:
-            mu_model = Model(input_img, mu, name='mu_model')
-            mu_test = mu_model.predict(x_test, verbose=0)
-            self._visualize_latent_space(mu_test, y_test)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        mu, log_var = self.encode(x)
+        z = self.reparameterize(mu, log_var)
+        recon = self.decode(z)
+        return recon, mu, log_var
 
-        loss_train = history.history['loss'][-1]
-        loss_val = history.history['val_loss'][-1] if 'val_loss' in history.history else None
 
-        return {
-            "encoder_path": self.encoder_path,
-            "decoder_path": self.decoder_path,
-            "full_model_path": self.full_model_path,
-            "history": history.history,
-            "loss_train": loss_train,
-            "loss_val": loss_val,
-            "latent_dim": self.latent_dim
-        }
+def _flatten(imgs: torch.Tensor) -> torch.Tensor:
+    return imgs.view(imgs.size(0), -1)
 
-    def _visualize_reconstruction(self, originals, reconstructed):
-        fig, axes = plt.subplots(2, 10, figsize=(12, 3))
-        for i in range(10):
-            axes[0, i].imshow(originals[i].reshape(28, 28), cmap='gray')
-            axes[0, i].axis('off')
-            axes[1, i].imshow(reconstructed[i].reshape(28, 28), cmap='gray')
-            axes[1, i].axis('off')
-        axes[0, 0].set_title("Originals")
-        axes[1, 0].set_title(f"VAE Reconstructed (dim={self.latent_dim})")
-        plt.tight_layout()
-        fig_path = self.config.FIGURES_DIR + f"/03_vae_reconstruction_dim{self.latent_dim}.png"
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Визуализация реконструкций VAE: {fig_path}")
 
-    def _visualize_latent_space(self, mu, labels):
-        plt.figure(figsize=(8, 6))
-        scatter = plt.scatter(mu[:, 0], mu[:, 1], c=labels, cmap='tab10', s=1, alpha=0.7)
-        plt.colorbar(scatter, ticks=range(10))
-        plt.title(f"VAE Latent Space (mu, dim={self.latent_dim})")
-        plt.xlabel("z[0]")
-        plt.ylabel("z[1]")
-        fig_path = self.config.FIGURES_DIR + f"/03_vae_latent_space_dim{self.latent_dim}.png"
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Визуализация латентного пространства VAE: {fig_path}")
+def vae_loss_fn(
+    recon_x: torch.Tensor,
+    x: torch.Tensor,
+    mu: torch.Tensor,
+    log_var: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    bce = F.binary_cross_entropy(recon_x, x, reduction="sum")
+    kl = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+    loss = (bce + kl) / x.size(0)
+    return loss, bce / x.size(0), kl / x.size(0)
+
+
+def train_vae(
+    model: VAE,
+    loader,
+    device: torch.device,
+    *,
+    epochs: int,
+    lr: float,
+) -> tuple[list[float], list[float]]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    bce_history: list[float] = []
+    kl_history: list[float] = []
+
+    for epoch in range(epochs):
+        model.train()
+        total_bce = 0.0
+        total_kl = 0.0
+        total_n = 0
+
+        for imgs, _ in loader:
+            x = _flatten(imgs).to(device)
+            recon, mu, log_var = model(x)
+            loss, bce, kl = vae_loss_fn(recon, x, mu, log_var)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_bce += bce.item() * x.size(0)
+            total_kl += kl.item() * x.size(0)
+            total_n += x.size(0)
+
+        avg_bce = total_bce / total_n
+        avg_kl = total_kl / total_n
+        bce_history.append(avg_bce)
+        kl_history.append(avg_kl)
+        print(f"  VAE epoch {epoch + 1:02d}/{epochs} | BCE={avg_bce:.2f} | KL={avg_kl:.2f}")
+
+    return bce_history, kl_history
+
+
+def _valid_cache(cache: object, cfg: Config) -> bool:
+    if not isinstance(cache, dict):
+        return False
+    return (
+        cache.get("cache_version") == cfg.cache_version
+        and cache.get("model_type") == "VAE"
+        and cache.get("model_kwargs", {}).get("latent_dim") == cfg.vae_latent_dim
+    )
+
+
+def _load_or_train(cfg: Config, device: torch.device, train_loader):
+    cache_path = cfg.cache_dir / "03_vae_dim2.pkl"
+
+    if cache_path.exists() and not cfg.force_retrain:
+        cache = load_pickle(cache_path)
+        if _valid_cache(cache, cfg):
+            model = VAE(**cache["model_kwargs"]).to(device)
+            model.load_state_dict(cache["state_dict"])
+            print("VAE loaded from cache.")
+            return model, list(cache["bce_history"]), list(cache["kl_history"])
+        print("VAE cache is incompatible. Retraining...")
+
+    model = VAE(latent_dim=cfg.vae_latent_dim).to(device)
+    bce_history, kl_history = train_vae(model, train_loader, device, epochs=cfg.vae_epochs, lr=cfg.lr)
+
+    save_pickle(
+        {
+            "cache_version": cfg.cache_version,
+            "model_type": "VAE",
+            "model_kwargs": {"input_dim": 784, "latent_dim": cfg.vae_latent_dim},
+            "state_dict": cpu_state_dict(model),
+            "bce_history": bce_history,
+            "kl_history": kl_history,
+        },
+        cache_path,
+    )
+    print("VAE cache saved.")
+    return model, bce_history, kl_history
+
+
+@torch.no_grad()
+def _reconstruct(model: VAE, loader, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    xs, recons = [], []
+
+    for imgs, _ in loader:
+        x = _flatten(imgs).to(device)
+        recon, _, _ = model(x)
+        xs.append(x.cpu().numpy())
+        recons.append(recon.cpu().numpy())
+
+    return np.concatenate(xs, axis=0), np.concatenate(recons, axis=0)
+
+
+@torch.no_grad()
+def encode_mu(model: VAE, loader, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    mus, labels = [], []
+
+    for imgs, y in loader:
+        x = _flatten(imgs).to(device)
+        mu, _ = model.encode(x)
+        mus.append(mu.cpu().numpy())
+        labels.append(y.numpy())
+
+    return np.concatenate(mus, axis=0), np.concatenate(labels, axis=0)
+
+
+def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    model, bce_history, kl_history = _load_or_train(cfg, device, data["train_loader"])
+
+    x_true, x_recon = _reconstruct(model, data["test_loader"], device)
+    mse = float(np.mean((x_true - x_recon) ** 2))
+
+    originals = x_true[:10].reshape(-1, 28, 28)
+    reconstructions = x_recon[:10].reshape(-1, 28, 28)
+
+    plot_image_rows(
+        [originals, reconstructions],
+        ["Оригинал", "VAE"],
+        save_path=cfg.figures_dir / "03_vae_reconstruction_dim2.png",
+        title="VAE: оригинал и реконструкция",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
+
+    plot_dual_curve(
+        bce_history,
+        kl_history,
+        label1="BCE",
+        label2="KL",
+        save_path=cfg.figures_dir / "03_vae_loss_curve_dim2.png",
+        title="VAE: кривые обучения",
+        ylabel="Loss",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
+
+    print(f"VAE test MSE: {mse:.6f}")
+
+    return {
+        "model": model,
+        "bce_history": bce_history,
+        "kl_history": kl_history,
+        "test_x": x_true,
+        "test_recon": x_recon,
+        "mse": mse,
+    }

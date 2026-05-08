@@ -1,133 +1,101 @@
-import os
-import numpy as np
+from __future__ import annotations
+
+from typing import Any
+
 import matplotlib.pyplot as plt
-import tensorflow as tf
-from pipeline import PipelineStep
-from step03_vae import sampling   # функция для Lambda-слоя
+import numpy as np
+import torch
+
+from config import Config
+from pipeline import plot_image_rows, save_pickle
 
 
-class GenerateStep(PipelineStep):
-    def __init__(self, config, force=False, latent_dim=None):
-        # Берём размерность из конфига, если не передана явно
-        if latent_dim is None:
-            latent_dim = config.LATENT_DIMS[0]
-        super().__init__(f"04_generate_dim{latent_dim}", config, force)
-        self.latent_dim = latent_dim
-        self.decoder_path = os.path.join(config.CACHE_DIR, f"vae_decoder_dim{latent_dim}.keras")
-        self.encoder_path = os.path.join(config.CACHE_DIR, f"vae_encoder_dim{latent_dim}.keras")
+@torch.no_grad()
+def run(cfg: Config, data: dict[str, Any], vae_model, device: torch.device) -> dict[str, Any]:
+    vae_model.eval()
 
-    def run(self):
-        # Загружаем модели с custom_objects
-        decoder = tf.keras.models.load_model(
-            self.decoder_path, compile=False,
-            custom_objects={'sampling': sampling}
-        )
-        encoder = tf.keras.models.load_model(
-            self.encoder_path, compile=False,
-            custom_objects={'sampling': sampling}
-        )
+    x_test = data["x_test"]
 
-        x_test = np.load(os.path.join(self.config.CACHE_DIR, "x_test.npy"))
+    # Random generation
+    z = torch.randn(cfg.generated_samples, vae_model.latent_dim, device=device)
+    random_imgs = vae_model.decode(z).cpu().numpy().reshape(-1, 28, 28)
 
-        # 1. Случайная генерация и сравнение с оригиналами
-        self._random_generation_and_comparison(decoder, x_test)
+    plot_image_rows(
+        [x_test[:cfg.generated_samples], random_imgs],
+        ["Оригинал", "VAE генерация"],
+        save_path=cfg.figures_dir / "04_random_generation.png",
+        title="VAE: случайная генерация из N(0,1)",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
 
-        # 2. Интерполяция
-        self._interpolation(decoder)
+    # Interpolation
+    point_a = torch.randn(1, vae_model.latent_dim, device=device)
+    point_b = torch.randn(1, vae_model.latent_dim, device=device)
+    alphas = torch.linspace(0, 1, cfg.interpolation_steps, device=device)
 
-        # 3. Сетка латентного пространства (только для dim=2)
-        if self.latent_dim == 2:
-            self._latent_grid(decoder)
-        else:
-            print("Сетка латентного пространства доступна только для dim=2, пропускаем.")
+    interp_z = torch.stack([(1 - a) * point_a + a * point_b for a in alphas], dim=0).squeeze(1)
+    interp_imgs = vae_model.decode(interp_z).cpu().numpy().reshape(cfg.interpolation_steps, 28, 28)
 
-        # 4. Добавление шума
-        self._noise_experiment(decoder, x_test, encoder)
+    fig, axes = plt.subplots(1, cfg.interpolation_steps, figsize=(1.45 * cfg.interpolation_steps, 2.15), squeeze=False)
+    for i, ax in enumerate(axes[0]):
+        ax.imshow(interp_imgs[i], cmap="gray", vmin=0, vmax=1)
+        ax.axis("off")
+        ax.set_title(f"{float(alphas[i]):.1f}", fontsize=8)
+    fig.suptitle("VAE: интерполяция между двумя точками латентного пространства", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(cfg.figures_dir / "04_interpolation.png", dpi=cfg.fig_dpi, bbox_inches="tight")
+    if cfg.show_plots:
+        plt.show()
+    plt.close(fig)
 
-        return {"status": "completed"}
+    # 2D latent grid
+    grid_x = np.linspace(cfg.latent_grid_min, cfg.latent_grid_max, cfg.latent_grid_size)
+    grid_y = np.linspace(cfg.latent_grid_min, cfg.latent_grid_max, cfg.latent_grid_size)
+    latent_grid = np.array([[x, y] for y in grid_y for x in grid_x], dtype=np.float32)
 
-    def _random_generation_and_comparison(self, decoder, x_test):
-        latent_samples = np.random.normal(size=(10, self.latent_dim))
-        generated = decoder.predict(latent_samples, verbose=0)
+    grid_imgs = (
+        vae_model.decode(torch.tensor(latent_grid, device=device))
+        .cpu()
+        .numpy()
+        .reshape(cfg.latent_grid_size, cfg.latent_grid_size, 28, 28)
+    )
 
-        fig, axes = plt.subplots(2, 10, figsize=(12, 3))
-        for i in range(10):
-            axes[0, i].imshow(x_test[i].reshape(28, 28), cmap='gray')
-            axes[0, i].axis('off')
-            axes[1, i].imshow(generated[i].reshape(28, 28), cmap='gray')
-            axes[1, i].axis('off')
-        axes[0, 0].set_title("Originals (test)")
-        axes[1, 0].set_title("Random Generation")
-        fig_path = os.path.join(self.config.FIGURES_DIR, "04_random_generation.png")
-        plt.tight_layout()
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Случайная генерация сохранена: {fig_path}")
+    fig, axes = plt.subplots(cfg.latent_grid_size, cfg.latent_grid_size, figsize=(10, 10), squeeze=False)
+    for r in range(cfg.latent_grid_size):
+        for c in range(cfg.latent_grid_size):
+            axes[r, c].imshow(grid_imgs[r, c], cmap="gray", vmin=0, vmax=1)
+            axes[r, c].axis("off")
+    fig.suptitle("VAE: сетка изображений в 2D латентном пространстве", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(cfg.figures_dir / "04_latent_grid.png", dpi=cfg.fig_dpi, bbox_inches="tight")
+    if cfg.show_plots:
+        plt.show()
+    plt.close(fig)
 
-    def _interpolation(self, decoder):
-        point_a = np.random.normal(size=(1, self.latent_dim))
-        point_b = np.random.normal(size=(1, self.latent_dim))
-        steps = 10
-        alphas = np.linspace(0, 1, steps)
-        interpolated = point_a * (1 - alphas[:, None]) + point_b * alphas[:, None]
-        images = decoder.predict(interpolated, verbose=0)
+    # Noise experiment
+    base_z = torch.randn(8, vae_model.latent_dim, device=device)
+    noise_rows = []
+    for sigma in cfg.noise_levels:
+        noisy_z = base_z + sigma * torch.randn_like(base_z)
+        imgs = vae_model.decode(noisy_z).cpu().numpy().reshape(-1, 28, 28)
+        noise_rows.append(imgs)
 
-        fig, axes = plt.subplots(1, steps, figsize=(12, 1.5))
-        for i in range(steps):
-            axes[i].imshow(images[i].reshape(28, 28), cmap='gray')
-            axes[i].axis('off')
-        fig_path = os.path.join(self.config.FIGURES_DIR, "04_interpolation.png")
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Интерполяция сохранена: {fig_path}")
+    plot_image_rows(
+        noise_rows,
+        [f"σ={sigma}" for sigma in cfg.noise_levels],
+        save_path=cfg.figures_dir / "04_noise_experiment.png",
+        title="VAE: влияние шума в латентном пространстве",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
 
-    def _latent_grid(self, decoder):
-        grid_size = 10
-        axis_range = np.linspace(-3, 3, grid_size)
-        grid = np.array([[x, y] for x in axis_range for y in axis_range])
-        images = decoder.predict(grid, verbose=0)
-
-        fig, axes = plt.subplots(grid_size, grid_size, figsize=(8, 8))
-        for idx, img in enumerate(images):
-            i, j = divmod(idx, grid_size)
-            axes[i, j].imshow(img.reshape(28, 28), cmap='gray')
-            axes[i, j].axis('off')
-        fig_path = os.path.join(self.config.FIGURES_DIR, "04_latent_grid.png")
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Сетка латентного пространства сохранена: {fig_path}")
-
-    def _noise_experiment(self, decoder, x_test, encoder):
-        imgs = x_test[:10]
-        latent_real = encoder.predict(imgs, verbose=0)
-
-        noise_levels = [0.5, 1.0]
-        fig, axes = plt.subplots(2 + len(noise_levels), 10, figsize=(12, 2 + len(noise_levels)*1.2))
-
-        # Оригиналы
-        for i in range(10):
-            axes[0, i].imshow(imgs[i].reshape(28, 28), cmap='gray')
-            axes[0, i].axis('off')
-        axes[0, 0].set_title("Original")
-
-        # Реконструкция без шума
-        reconstructed = decoder.predict(latent_real, verbose=0)
-        for i in range(10):
-            axes[1, i].imshow(reconstructed[i].reshape(28, 28), cmap='gray')
-            axes[1, i].axis('off')
-        axes[1, 0].set_title("Reconstructed (no noise)")
-
-        # С шумом
-        for row, noise_std in enumerate(noise_levels, start=2):
-            noisy_latent = latent_real + np.random.normal(0, noise_std, latent_real.shape)
-            noisy_images = decoder.predict(noisy_latent, verbose=0)
-            for i in range(10):
-                axes[row, i].imshow(noisy_images[i].reshape(28, 28), cmap='gray')
-                axes[row, i].axis('off')
-            axes[row, 0].set_title(f"Noise σ={noise_std}")
-
-        fig_path = os.path.join(self.config.FIGURES_DIR, "04_noise_experiment.png")
-        plt.tight_layout()
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Эксперимент с шумом сохранён: {fig_path}")
+    cache = {
+        "random_imgs": random_imgs,
+        "interp_imgs": interp_imgs,
+        "grid_imgs": grid_imgs,
+        "noise_levels": cfg.noise_levels,
+        "noise_rows": noise_rows,
+    }
+    save_pickle(cache, cfg.cache_dir / "04_generate_dim2.pkl")
+    return cache

@@ -1,81 +1,170 @@
-import os
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
-import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense, Flatten, Reshape
-from pipeline import PipelineStep
-from sklearn.metrics import mean_squared_error
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class AEStep(PipelineStep):
-    def __init__(self, config, force=False):
-        super().__init__("02_ae", config, force)
-        self.model_path = os.path.join(config.CACHE_DIR, "ae_model.keras")
+from config import Config
+from pipeline import cpu_state_dict, load_pickle, save_pickle, plot_image_rows, plot_line_curve
 
-    def run(self):
-        # Загружаем данные из шага 1
-        x_train = np.load(os.path.join(self.config.CACHE_DIR, "x_train.npy"))
-        x_test  = np.load(os.path.join(self.config.CACHE_DIR, "x_test.npy"))
 
-        # Улучшенная архитектура: 256 → 128 → 64 → 128 → 256 → 784
-        input_img = Input(shape=(28, 28, 1))
-        x = Flatten()(input_img)
-        x = Dense(256, activation='relu')(x)
-        x = Dense(128, activation='relu')(x)
-        encoded = Dense(64, activation='relu')(x)       # bottleneck 64
-        x = Dense(128, activation='relu')(encoded)
-        x = Dense(256, activation='relu')(x)
-        decoded = Dense(28*28, activation='sigmoid')(x)
-        decoded = Reshape((28, 28, 1))(decoded)
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim: int = 784, latent_dim: int = 64):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
 
-        autoencoder = Model(input_img, decoded)
-        autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
-
-        history = autoencoder.fit(
-            x_train, x_train,
-            epochs=self.config.EPOCHS_AE,
-            batch_size=self.config.BATCH_SIZE,
-            validation_split=self.config.VALIDATION_SPLIT,
-            verbose=1
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, input_dim),
+            nn.Sigmoid(),
         )
 
-        autoencoder.save(self.model_path)
-        print(f"Модель сохранена: {self.model_path}")
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        z = self.encoder(x)
+        recon = self.decoder(z)
+        return recon, z
 
-        # Визуализация реконструкции на тестовых примерах
-        reconstructed = autoencoder.predict(x_test[:10], verbose=0)
-        self._visualize(x_test[:10], reconstructed)
 
-        # Вычисляем MSE на всём тестовом наборе для сравнения
-        test_reconstructed = autoencoder.predict(x_test, verbose=0)
-        x_test_flat = x_test.reshape(len(x_test), -1)
-        test_reconstructed_flat = test_reconstructed.reshape(len(test_reconstructed), -1)
-        mse_test = mean_squared_error(x_test_flat, test_reconstructed_flat)
+def _flatten(imgs: torch.Tensor) -> torch.Tensor:
+    return imgs.view(imgs.size(0), -1)
 
-        # Сохраняем последние BCE (для кривых обучения)
-        loss_train = history.history['loss'][-1]
-        loss_val   = history.history['val_loss'][-1] if 'val_loss' in history.history else None
 
-        return {
-            "model_path": self.model_path,
-            "history": history.history,
-            "loss_train": loss_train,
-            "loss_val": loss_val,
-            "mse_test": mse_test,
-            "test_reconstructed_flat": test_reconstructed_flat   # пригодится для сравнения
-        }
+def train_ae(
+    model: Autoencoder,
+    loader,
+    device: torch.device,
+    *,
+    epochs: int,
+    lr: float,
+) -> list[float]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    history: list[float] = []
 
-    def _visualize(self, originals, reconstructed):
-        fig, axes = plt.subplots(2, 10, figsize=(12, 3))
-        for i in range(10):
-            axes[0, i].imshow(originals[i].reshape(28, 28), cmap='gray')
-            axes[0, i].axis('off')
-            axes[1, i].imshow(reconstructed[i].reshape(28, 28), cmap='gray')
-            axes[1, i].axis('off')
-        axes[0, 0].set_title("Originals")
-        axes[1, 0].set_title("AE Reconstructed")
-        plt.tight_layout()
-        fig_path = self.config.FIGURES_DIR + "/02_ae_reconstruction.png"
-        plt.savefig(fig_path, dpi=150)
-        plt.close()
-        print(f"Визуализация реконструкций: {fig_path}")
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        total_n = 0
+
+        for imgs, _ in loader:
+            x = _flatten(imgs).to(device)
+            recon, _ = model(x)
+            loss = F.binary_cross_entropy(recon, x, reduction="sum") / x.size(0)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * x.size(0)
+            total_n += x.size(0)
+
+        avg_loss = total_loss / total_n
+        history.append(avg_loss)
+        print(f"  AE epoch {epoch + 1:02d}/{epochs} | loss={avg_loss:.4f}")
+
+    return history
+
+
+def _valid_cache(cache: object, cfg: Config) -> bool:
+    if not isinstance(cache, dict):
+        return False
+    return (
+        cache.get("cache_version") == cfg.cache_version
+        and cache.get("model_type") == "AE"
+        and cache.get("model_kwargs", {}).get("latent_dim") == cfg.ae_latent_dim
+    )
+
+
+def _load_or_train(cfg: Config, device: torch.device, train_loader):
+    cache_path = cfg.cache_dir / "02_ae.pkl"
+
+    if cache_path.exists() and not cfg.force_retrain:
+        cache = load_pickle(cache_path)
+        if _valid_cache(cache, cfg):
+            model = Autoencoder(**cache["model_kwargs"]).to(device)
+            model.load_state_dict(cache["state_dict"])
+            print("AE loaded from cache.")
+            return model, list(cache["history"])
+        print("AE cache is incompatible. Retraining...")
+
+    model = Autoencoder(latent_dim=cfg.ae_latent_dim).to(device)
+    history = train_ae(model, train_loader, device, epochs=cfg.ae_epochs, lr=cfg.lr)
+
+    save_pickle(
+        {
+            "cache_version": cfg.cache_version,
+            "model_type": "AE",
+            "model_kwargs": {"input_dim": 784, "latent_dim": cfg.ae_latent_dim},
+            "state_dict": cpu_state_dict(model),
+            "history": history,
+        },
+        cache_path,
+    )
+    print("AE cache saved.")
+    return model, history
+
+
+@torch.no_grad()
+def _reconstruct(model: Autoencoder, loader, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    xs, recons = [], []
+
+    for imgs, _ in loader:
+        x = _flatten(imgs).to(device)
+        recon, _ = model(x)
+        xs.append(x.cpu().numpy())
+        recons.append(recon.cpu().numpy())
+
+    return np.concatenate(xs, axis=0), np.concatenate(recons, axis=0)
+
+
+def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    model, history = _load_or_train(cfg, device, data["train_loader"])
+
+    x_true, x_recon = _reconstruct(model, data["test_loader"], device)
+    mse = float(np.mean((x_true - x_recon) ** 2))
+
+    originals = x_true[:10].reshape(-1, 28, 28)
+    reconstructions = x_recon[:10].reshape(-1, 28, 28)
+
+    plot_image_rows(
+        [originals, reconstructions],
+        ["Оригинал", "AE"],
+        save_path=cfg.figures_dir / "02_ae_reconstruction.png",
+        title="Autoencoder: оригинал и реконструкция",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
+
+    plot_line_curve(
+        history,
+        save_path=cfg.figures_dir / "02_ae_loss_curve.png",
+        title="Autoencoder: кривая обучения",
+        ylabel="BCE Loss",
+        dpi=cfg.fig_dpi,
+        show=cfg.show_plots,
+    )
+
+    print(f"AE test MSE: {mse:.6f}")
+
+    return {
+        "model": model,
+        "history": history,
+        "test_x": x_true,
+        "test_recon": x_recon,
+        "mse": mse,
+    }
