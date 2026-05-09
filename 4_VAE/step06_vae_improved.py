@@ -189,8 +189,9 @@ def _compute_mse(model: BetaVAE, loader, device: torch.device) -> float:
     for imgs, _ in loader:
         x = _flatten(imgs).to(device)
         recon, _, _ = model(x)
-        mse = F.mse_loss(recon, x, reduction="sum")
-        total_mse += mse.item()
+        # стандартный MSE, усреднённый по всем элементам
+        mse = F.mse_loss(recon, x)  # reduction='mean' по умолчанию
+        total_mse += mse.item() * x.size(0)  # умножаем на размер батча для корректного среднего
         total_n += x.size(0)
     return total_mse / total_n
 
@@ -217,7 +218,6 @@ def _plot_latent_space(
     max_points: int = 5000,
 ) -> None:
     take = min(max_points, len(mu))
-    # Reduce to 2D with PCA for visualisation
     pca = PCA(n_components=2, random_state=42)
     mu_2d = pca.fit_transform(mu[:take])
 
@@ -271,11 +271,11 @@ def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, An
         max_cols=10,
     )
 
-    # ----- MSE on test set -----
+    # MSE on test set
     mse_bvae = _compute_mse(model, data["test_loader"], device)
     print(f"β-VAE test MSE: {mse_bvae:.6f}")
 
-    # ----- Latent space (PCA projection) -----
+    # Latent space (PCA projection)
     print("Computing latent representation for β-VAE...")
     mu_bvae, labels_bvae = _encode_mu(model, data["test_loader"], device)
     _plot_latent_space(
@@ -287,28 +287,29 @@ def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, An
         show=cfg.show_plots,
     )
 
-    # ----- Final comparison with previous methods -----
-    # Load previous MSEs from cache if available, otherwise use placeholders
+    # ----- Final comparison with all previous methods -----
     cache_05_path = cfg.cache_dir / "05_compare.pkl"
     if cache_05_path.exists():
         cache_05 = load_pickle(cache_05_path)
         mse_pca = cache_05.get("mse_pca", float("nan"))
         mse_ae = cache_05.get("mse_ae", float("nan"))
-        mse_vae = cache_05.get("mse_vae", float("nan"))
         mse_pca_ae = cache_05.get("mse_pca_ae", float("nan"))
         pca_comp = cache_05.get("pca_components_used", cfg.pca_fallback_components)
+        vae_mses = cache_05.get("mse_vae", {})  # dict dim -> mse
     else:
-        mse_pca = mse_ae = mse_vae = mse_pca_ae = float("nan")
+        mse_pca = mse_ae = mse_pca_ae = float("nan")
         pca_comp = cfg.pca_fallback_components
+        vae_mses = {}
 
-    all_labels = [
-        f"PCA ({pca_comp}d)",
-        f"AE ({cfg.ae_latent_dim}d)",
-        f"VAE ({cfg.vae_latent_dim}d)",
-        "PCA+AE",
-        f"β-VAE ({cfg.improved_latent_dim}d)",
-    ]
-    all_mses = [mse_pca, mse_ae, mse_vae, mse_pca_ae, mse_bvae]
+    all_labels = [f"PCA ({pca_comp}d)", f"AE ({cfg.ae_latent_dim}d)"]
+    all_mses = [mse_pca, mse_ae]
+    for dim in sorted(vae_mses.keys()):
+        all_labels.append(f"VAE ({dim}d)")
+        all_mses.append(vae_mses[dim])
+    all_labels.append("PCA+AE")
+    all_mses.append(mse_pca_ae)
+    all_labels.append(f"β-VAE ({cfg.improved_latent_dim}d)")
+    all_mses.append(mse_bvae)
 
     plot_bar_comparison(
         all_labels,

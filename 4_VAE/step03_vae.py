@@ -103,54 +103,66 @@ def train_vae(
         avg_kl = total_kl / total_n
         bce_history.append(avg_bce)
         kl_history.append(avg_kl)
-        print(f"  VAE epoch {epoch + 1:02d}/{epochs} | BCE={avg_bce:.2f} | KL={avg_kl:.2f}")
+        print(
+            f"  VAE dim={model.latent_dim} epoch {epoch + 1:02d}/{epochs} "
+            f"| BCE={avg_bce:.2f} | KL={avg_kl:.2f}"
+        )
 
     return bce_history, kl_history
 
 
-def _valid_cache(cache: object, cfg: Config) -> bool:
+def _valid_cache(cache: object, cfg: Config, latent_dim: int) -> bool:
     if not isinstance(cache, dict):
         return False
     return (
         cache.get("cache_version") == cfg.cache_version
         and cache.get("model_type") == "VAE"
-        and cache.get("model_kwargs", {}).get("latent_dim") == cfg.vae_latent_dim
+        and cache.get("model_kwargs", {}).get("latent_dim") == latent_dim
     )
 
 
-def _load_or_train(cfg: Config, device: torch.device, train_loader):
-    cache_path = cfg.cache_dir / "03_vae_dim2.pkl"
+def _load_or_train_one(
+    cfg: Config, device: torch.device, train_loader, latent_dim: int
+) -> dict[str, Any]:
+    cache_path = cfg.cache_dir / f"03_vae_dim{latent_dim}.pkl"
 
     if cache_path.exists() and not cfg.force_retrain:
         cache = load_pickle(cache_path)
-        if _valid_cache(cache, cfg):
+        if _valid_cache(cache, cfg, latent_dim):
             model = VAE(**cache["model_kwargs"]).to(device)
             model.load_state_dict(cache["state_dict"])
-            print("VAE loaded from cache.")
-            return model, list(cache["bce_history"]), list(cache["kl_history"])
-        print("VAE cache is incompatible. Retraining...")
+            print(f"VAE (dim={latent_dim}) loaded from cache.")
+            return {
+                "model": model,
+                "bce_history": list(cache["bce_history"]),
+                "kl_history": list(cache["kl_history"]),
+            }
+        print(f"VAE cache incompatible for dim={latent_dim}. Retraining...")
 
-    model = VAE(latent_dim=cfg.vae_latent_dim).to(device)
-    bce_history, kl_history = train_vae(model, train_loader, device,
-                                        epochs=cfg.vae_epochs, lr=cfg.lr)
+    model = VAE(latent_dim=latent_dim).to(device)
+    bce_history, kl_history = train_vae(
+        model, train_loader, device, epochs=cfg.vae_epochs, lr=cfg.lr
+    )
 
     save_pickle(
         {
             "cache_version": cfg.cache_version,
             "model_type": "VAE",
-            "model_kwargs": {"input_dim": 784, "latent_dim": cfg.vae_latent_dim},
+            "model_kwargs": {"input_dim": 784, "latent_dim": latent_dim},
             "state_dict": cpu_state_dict(model),
             "bce_history": bce_history,
             "kl_history": kl_history,
         },
         cache_path,
     )
-    print("VAE cache saved.")
-    return model, bce_history, kl_history
+    print(f"VAE cache saved for dim={latent_dim}.")
+    return {"model": model, "bce_history": bce_history, "kl_history": kl_history}
 
 
 @torch.no_grad()
-def _reconstruct(model: VAE, loader, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+def _reconstruct(
+    model: VAE, loader, device: torch.device
+) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     xs, recons = [], []
 
@@ -178,42 +190,61 @@ def encode_mu(model: VAE, loader, device: torch.device) -> tuple[np.ndarray, np.
 
 
 def run(cfg: Config, data: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    model, bce_history, kl_history = _load_or_train(cfg, device, data["train_loader"])
-
-    x_true, x_recon = _reconstruct(model, data["test_loader"], device)
-    mse = float(np.mean((x_true - x_recon) ** 2))
-
-    originals = x_true[:10].reshape(-1, 28, 28)
-    reconstructions = x_recon[:10].reshape(-1, 28, 28)
-
-    plot_image_rows(
-        [originals, reconstructions],
-        ["Оригинал", "VAE (реконструкция)"],
-        save_path=cfg.figures_dir / "03_vae_reconstruction_dim2.png",
-        title="VAE: оригинал и реконструкция",
-        dpi=cfg.fig_dpi,
-        show=cfg.show_plots,
-    )
-
-    plot_dual_curve(
-        bce_history,
-        kl_history,
-        label1="BCE",
-        label2="KL",
-        save_path=cfg.figures_dir / "03_vae_loss_curve_dim2.png",
-        title="VAE: кривые обучения",
-        ylabel="Loss",
-        dpi=cfg.fig_dpi,
-        show=cfg.show_plots,
-    )
-
-    print(f"VAE test MSE: {mse:.6f}")
-
-    return {
-        "model": model,
-        "bce_history": bce_history,
-        "kl_history": kl_history,
-        "test_x": x_true,
-        "test_recon": x_recon,
-        "mse": mse,
+    """Train all VAE variants, return dict with per-dimension artifacts."""
+    results: dict[str, Any] = {
+        "models": {},
+        "histories": {},
+        "mses": {},
+        "test_recon": {},
     }
+    # We'll also store the test originals once (they are the same for all dims)
+    x_test = None
+
+    for latent_dim in cfg.vae_latent_dims:
+        print(f"\n--- VAE with latent_dim={latent_dim} ---")
+        res = _load_or_train_one(cfg, device, data["train_loader"], latent_dim)
+        model = res["model"]
+        results["models"][latent_dim] = model
+        results["histories"][latent_dim] = {
+            "bce": res["bce_history"],
+            "kl": res["kl_history"],
+        }
+
+        # Reconstruct and compute MSE
+        x_true, x_recon = _reconstruct(model, data["test_loader"], device)
+        if x_test is None:
+            x_test = x_true  # save once
+        mse = float(np.mean((x_true - x_recon) ** 2))
+        results["mses"][latent_dim] = mse
+        results["test_recon"][latent_dim] = x_recon
+
+        # Plot reconstruction for this dimension
+        originals = x_true[:10].reshape(-1, 28, 28)
+        reconstructions = x_recon[:10].reshape(-1, 28, 28)
+        plot_image_rows(
+            [originals, reconstructions],
+            ["Оригинал", f"VAE (dim={latent_dim})"],
+            save_path=cfg.figures_dir / f"03_vae_reconstruction_dim{latent_dim}.png",
+            title=f"VAE: оригинал и реконструкция (размерность {latent_dim})",
+            dpi=cfg.fig_dpi,
+            show=cfg.show_plots,
+        )
+
+        # Loss curves
+        plot_dual_curve(
+            res["bce_history"],
+            res["kl_history"],
+            label1="BCE",
+            label2="KL",
+            save_path=cfg.figures_dir / f"03_vae_loss_curve_dim{latent_dim}.png",
+            title=f"VAE: кривые обучения (размерность {latent_dim})",
+            ylabel="Loss",
+            dpi=cfg.fig_dpi,
+            show=cfg.show_plots,
+        )
+
+        print(f"VAE dim={latent_dim} test MSE: {mse:.6f}")
+
+    # Also store originals for later comparisons
+    results["test_x"] = x_test
+    return results

@@ -10,10 +10,12 @@ from step03_vae import run as run_step03
 from step04_generate import run as run_step04
 from step05_compare import run as run_step05
 from step06_vae_improved import run as run_step06
+from step07_gan import run as run_step07
+from step08_final_comparison import run as run_step08
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MNIST AE/VAE/β-VAE pipeline")
+    parser = argparse.ArgumentParser(description="MNIST AE/VAE/β-VAE/GAN pipeline")
     parser.add_argument("--show-plots", action="store_true",
                         help="Показывать графики на экране")
     parser.add_argument("--force-retrain", action="store_true",
@@ -43,17 +45,31 @@ def main() -> None:
     print("\nStep 02: AE")
     ae_result = run_step02(cfg, data, device)
 
-    print("\nStep 03: VAE (2D)")
-    vae_result = run_step03(cfg, data, device)
+    print("\nStep 03: VAE (multi-dimensional)")
+    vae_results = run_step03(cfg, data, device)
 
-    print("\nStep 04: Generation experiments")
-    run_step04(cfg, data, vae_result["model"], device)
+    if 2 in vae_results["models"]:
+        print("\nStep 04: Generation experiments (VAE 2D)")
+        run_step04(cfg, data, vae_results["models"][2], device)
+    else:
+        print("\nStep 04: SKIPPED (no 2D VAE available)")
 
     print("\nStep 05: Comparison")
-    run_step05(cfg, data, ae_result["model"], vae_result["model"], device)
+    compare_results = run_step05(cfg, data, ae_result["model"], vae_results, device)
 
     print("\nStep 06: Improved β-VAE")
-    run_step06(cfg, data, device)
+    bvae_results = run_step06(cfg, data, device)
+
+    print("\nStep 07: GAN")
+    gan_results = run_step07(cfg, data, device)
+
+    print("\nStep 08: Final analysis")
+    run_step08(
+        cfg, data,
+        ae_result, vae_results,
+        compare_results, bvae_results,
+        gan_results, device,
+    )
 
     print("\nDone. Figures and caches are saved in output/.")
 

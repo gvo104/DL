@@ -17,7 +17,7 @@ class Config:
     seed: int = 42
 
     # ---------- Cache ----------
-    cache_version: int = 3
+    cache_version: int = 4            # bumped for vae dim list
 
     # ---------- Data ----------
     batch_size: int = 256
@@ -30,27 +30,34 @@ class Config:
     rotation_deg: int = 15
     translate_frac: float = 0.1
 
-    # ---------- Standard AE / VAE ----------
+    # ---------- Standard AE ----------
     ae_latent_dim: int = 64
     ae_epochs: int = 20
 
-    vae_latent_dim: int = 2
+    # ---------- Standard VAE (multiple latent dims) ----------
+    vae_latent_dims: tuple[int, ...] = (2, 8, 16)
     vae_epochs: int = 20
 
     # PCA – auto‑fit to reach variance threshold
     pca_auto_components: bool = True
     pca_variance_threshold: float = 0.95
-    pca_fallback_components: int = 64          # used only if auto fails or flag is False
+    pca_fallback_components: int = 64
     pca_ae_latent_dim: int = 16
     pca_ae_epochs: int = 10
 
     lr: float = 1e-3
 
     # ---------- Improved β‑VAE (Step 06) ----------
-    improved_latent_dim: int = 2
+    improved_latent_dim: int = 8
     improved_vae_epochs: int = 20
-    beta_max: float = 0.0005
-    anneal_epochs: int = 17
+    beta_max: float = 1.0
+    anneal_epochs: int = 10
+    
+    # ---------- GAN (Step 07) ----------
+    gan_latent_dim: int = 64
+    gan_epochs: int = 100
+    gan_lr: float = 2e-4
+    gan_betas: tuple[float, float] = (0.5, 0.999)
 
     # ---------- Generation & visualisation ----------
     noise_factor: float = 0.3
